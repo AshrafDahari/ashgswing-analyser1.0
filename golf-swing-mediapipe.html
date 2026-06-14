@@ -1,0 +1,1075 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>SwingAI – Golf Swing Analyzer</title>
+
+<!-- MediaPipe Pose -->
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js" crossorigin="anonymous"></script>
+
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+:root {
+  --green:#4CAF50; --green-bright:#00e676; --yellow:#FFD600;
+  --red:#f44336; --bg-dark:#0a0a0a; --text:#f0f0f0;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Segoe UI', sans-serif;
+  background: #111;
+  display: flex; justify-content: center; align-items: flex-start;
+  min-height: 100vh; padding: 16px 8px 40px;
+}
+
+.phone-wrap {
+  width: 100%; max-width: 420px;
+  background: #000; border-radius: 40px; overflow: hidden;
+  box-shadow: 0 24px 60px rgba(0,0,0,0.9), inset 0 0 0 1px #333;
+  position: relative;
+}
+
+/* ── STATUS BAR ── */
+.status-bar {
+  height: 46px; display: flex; align-items: center;
+  justify-content: space-between; padding: 0 24px;
+  font-size: 13px; font-weight: 600; position: relative; z-index: 20;
+}
+.status-bar .notch {
+  position: absolute; left:50%; transform:translateX(-50%);
+  top:8px; width:110px; height:28px;
+  background:#000; border-radius:16px;
+}
+.status-icons { display:flex; gap:5px; align-items:center; font-size:11px; }
+.battery {
+  background:#4caf50; color:#fff; padding:1px 5px;
+  border-radius:4px; font-size:10px; font-weight:700;
+}
+
+/* ── SCREENS ── */
+.screen { display:none; flex-direction:column; }
+.screen.active { display:flex; }
+
+/* ══════════════════════════════════════
+   SCREEN 1 — LIVE CAMERA + POSE
+══════════════════════════════════════ */
+#screen-live {
+  background:#000; min-height: 700px; position:relative;
+}
+
+.live-topbar {
+  position:absolute; top:0; left:0; right:0; z-index:30;
+  display:flex; align-items:center; justify-content:space-between;
+  padding:10px 14px;
+  background:linear-gradient(to bottom, rgba(0,0,0,0.6), transparent);
+}
+.back-btn { color:#fff; font-size:15px; cursor:pointer; padding:4px 8px; }
+.live-ctrls { display:flex; gap:6px; }
+.ctrl-tag {
+  background:rgba(255,255,255,0.18); color:#fff; border:none;
+  padding:4px 10px; border-radius:6px; font-size:10px; font-weight:700;
+  cursor:pointer; backdrop-filter:blur(8px); letter-spacing:0.5px;
+}
+.ctrl-tag.live-dot { background:rgba(220,50,50,0.75); }
+
+/* Camera + canvas stack */
+.camera-container {
+  position:relative; width:100%; flex:1;
+  min-height:560px; overflow:hidden; background:#000;
+}
+#input-video {
+  position:absolute; inset:0; width:100%; height:100%;
+  object-fit:cover; transform:scaleX(-1); /* mirror for selfie feel */
+}
+#pose-canvas {
+  position:absolute; inset:0; width:100%; height:100%;
+  object-fit:cover; transform:scaleX(-1);
+}
+
+/* Loading overlay */
+#loading-overlay {
+  position:absolute; inset:0; background:rgba(0,0,0,0.85);
+  display:flex; flex-direction:column; align-items:center; justify-content:center;
+  z-index:25; color:#fff;
+}
+#loading-overlay .spinner {
+  width:48px; height:48px; border:4px solid #333;
+  border-top-color:#00e676; border-radius:50%;
+  animation:spin 0.8s linear infinite; margin-bottom:14px;
+}
+@keyframes spin { to { transform:rotate(360deg); } }
+#loading-overlay p { font-size:14px; color:#aaa; margin-top:6px; }
+#loading-overlay .title { font-size:18px; font-weight:700; color:#00e676; }
+
+/* Permission denied state */
+#perm-denied {
+  display:none; position:absolute; inset:0;
+  background:#111; flex-direction:column; align-items:center;
+  justify-content:center; text-align:center; padding:30px; z-index:30;
+}
+#perm-denied.show { display:flex; }
+#perm-denied h2 { color:#f44336; font-size:20px; margin-bottom:12px; }
+#perm-denied p { color:#aaa; font-size:13px; line-height:1.6; }
+#perm-denied .retry-btn {
+  margin-top:20px; background:#00e676; color:#000; border:none;
+  padding:12px 32px; border-radius:10px; font-size:14px; font-weight:700;
+  cursor:pointer;
+}
+
+/* Phase label */
+.phase-label {
+  position:absolute; bottom:80px; left:16px;
+  background:rgba(0,0,0,0.5); color:rgba(255,255,255,0.9);
+  font-size:11px; padding:4px 10px; border-radius:6px;
+  backdrop-filter:blur(4px); z-index:20;
+  font-style:italic;
+}
+
+/* FPS counter */
+.fps-label {
+  position:absolute; top:60px; right:12px;
+  color:rgba(255,255,255,0.5); font-size:10px; z-index:20;
+}
+
+/* Metrics live bar */
+.live-metrics {
+  position:absolute; bottom:80px; right:10px;
+  display:flex; flex-direction:column; gap:4px; z-index:20;
+}
+.lm-item {
+  background:rgba(0,0,0,0.55); backdrop-filter:blur(4px);
+  border-radius:6px; padding:4px 8px; font-size:9px;
+  color:#fff; min-width:100px;
+}
+.lm-name { color:#aaa; letter-spacing:0.5px; margin-bottom:2px; }
+.lm-bar-bg { height:3px; background:#333; border-radius:2px; overflow:hidden; }
+.lm-bar-fill { height:100%; border-radius:2px; transition:width 0.3s; }
+
+/* Stop button */
+.stop-btn {
+  position:absolute; bottom:14px; left:50%; transform:translateX(-50%);
+  background:#e53935; color:#fff; border:none; border-radius:12px;
+  padding:15px 0; font-size:14px; font-weight:800; letter-spacing:2px;
+  cursor:pointer; width:calc(100% - 32px); z-index:25;
+  box-shadow:0 4px 20px rgba(229,57,53,0.5);
+}
+
+/* ══════════════════════════════════════
+   SCREEN 2 — SWING RESULT
+══════════════════════════════════════ */
+#screen-result { background:#0a0a0a; }
+
+.result-topbar {
+  display:flex; align-items:center; justify-content:space-between;
+  padding:10px 14px; background:#fff;
+}
+.result-topbar .back { font-size:15px; cursor:pointer; color:#007aff; }
+.result-topbar .title { font-weight:800; font-size:13px; letter-spacing:1px; color:#000; }
+.result-topbar .tag-row { display:flex; gap:5px; }
+.result-topbar .tag {
+  background:#f0f0f0; padding:3px 8px; border-radius:4px;
+  font-size:10px; font-weight:600; color:#333; cursor:pointer;
+}
+.result-topbar .tag.done { background:#e8f5e9; color:#2e7d32; }
+
+/* Skeleton preview */
+.pose-preview {
+  height:200px;
+  background:linear-gradient(160deg, #b0c4cf 0%, #7e9eb0 50%, #4a7a8e 100%);
+  display:flex; align-items:center; justify-content:center;
+  position:relative;
+}
+.pose-preview canvas {
+  max-height:190px; border-radius:6px;
+}
+.pose-preview .no-capture {
+  color:rgba(255,255,255,0.7); font-size:13px; text-align:center; padding:16px;
+}
+
+/* Score area */
+.score-area {
+  background:#0d1a0d; padding:14px 18px 10px;
+}
+.score-label-sm { font-size:9px; color:#8aad8a; letter-spacing:1px; margin-bottom:4px; }
+.score-row {
+  display:flex; align-items:center; gap:12px;
+}
+.score-big { font-size:44px; font-weight:900; color:var(--yellow); letter-spacing:-2px; }
+.score-denom { font-size:22px; color:#666; }
+.score-bar-wrap { flex:1; }
+.score-bar-lbl { font-size:9px; color:#8aad8a; letter-spacing:1px; margin-bottom:5px; }
+.score-bar-bg { height:6px; background:#222; border-radius:3px; overflow:hidden; }
+.score-bar-fill { height:100%; border-radius:3px; background:linear-gradient(90deg,#4caf50,#FFD600); transition:width 0.6s ease; }
+
+/* Metrics grid */
+.metrics-grid { display:grid; grid-template-columns:1fr 1fr; gap:1px; background:#222; }
+.metric-cell { background:#111; padding:13px 14px; }
+.metric-name { font-size:8px; color:#666; letter-spacing:1px; margin-bottom:3px; text-transform:uppercase; }
+.metric-rating { font-size:15px; font-weight:700; margin-bottom:2px; }
+.metric-rating.excellent { color:#00e676; }
+.metric-rating.good { color:#4caf50; }
+.metric-rating.warning { color:#f44336; }
+.metric-sub { font-size:9px; color:#555; margin-bottom:5px; }
+.metric-bar { height:3px; border-radius:2px; }
+.metric-bar.g { background:#4caf50; }
+.metric-bar.r { background:#f44336; }
+.metric-bar.y { background:#FFD600; }
+
+.result-actions { display:flex; gap:10px; padding:14px; background:#fff; }
+.btn-share {
+  flex:1; padding:14px; border:1px solid #ccc; border-radius:10px;
+  background:#fff; font-size:13px; font-weight:600; color:#333; cursor:pointer;
+}
+.btn-again {
+  flex:2; padding:14px; border:none; border-radius:10px;
+  background:#1a1a2e; font-size:13px; font-weight:800;
+  color:#fff; letter-spacing:2px; cursor:pointer;
+}
+
+/* ══════════════════════════════════════
+   SCREEN 3 — RECORD
+══════════════════════════════════════ */
+#screen-record { background:#f5f5f5; }
+.light-topbar {
+  background:#fff; padding:14px 18px; border-bottom:1px solid #e8e8e8;
+}
+.light-topbar h1 { font-size:22px; font-weight:800; }
+
+.record-count { font-size:11px; color:#999; text-align:right; padding:6px 16px; }
+.swing-card { background:#fff; border-bottom:8px solid #f5f5f5; }
+.swing-card-header {
+  display:flex; align-items:center; gap:12px; padding:14px 16px;
+}
+.score-badge {
+  width:52px; height:52px; border-radius:12px; flex-shrink:0;
+  display:flex; flex-direction:column; align-items:center; justify-content:center;
+}
+.score-badge.good { background:#e8f5e9; border:2px solid #4caf50; }
+.score-badge.fair { background:#fff3e0; border:2px solid #ff9800; }
+.score-badge .snum { font-size:20px; font-weight:900; color:#222; }
+.score-badge .slbl { font-size:8px; font-weight:700; color:#888; letter-spacing:0.5px; }
+.swing-meta { flex:1; }
+.swing-date { font-size:15px; font-weight:700; }
+.swing-time { font-size:11px; color:#999; }
+.swing-club { font-size:11px; color:#555; margin-top:1px; }
+.expand-btn { color:#ccc; cursor:pointer; font-size:18px; padding:6px; }
+
+.phase-thumbs {
+  display:grid; grid-template-columns:repeat(4,1fr); gap:3px; padding:0 14px 8px;
+}
+.phase-thumb {
+  background:#111; border-radius:6px; aspect-ratio:3/4;
+  display:flex; flex-direction:column; align-items:center; justify-content:center;
+  position:relative; overflow:hidden;
+}
+.phase-thumb svg { width:56px; height:84px; }
+.phase-thumb-lbl {
+  position:absolute; bottom:3px; left:50%; transform:translateX(-50%);
+  font-size:7px; color:#aaa; white-space:nowrap; letter-spacing:0.5px;
+}
+
+.metrics-mini {
+  display:grid; grid-template-columns:1fr 1fr;
+  padding:6px 14px 4px; gap:6px 14px;
+}
+.mm-item { padding-bottom:7px; border-bottom:1px solid #f0f0f0; }
+.mm-name { font-size:8px; color:#bbb; letter-spacing:1px; margin-bottom:2px; text-transform:uppercase; }
+.mm-val { font-size:13px; font-weight:700; }
+.mm-val.g { color:#4caf50; }
+.mm-val.r { color:#f44336; }
+.mm-sub { font-size:9px; color:#bbb; }
+.mm-bar { height:3px; border-radius:2px; margin-top:3px; }
+.mm-bar.g { background:#4caf50; }
+.mm-bar.r { background:#f44336; }
+.delete-btn {
+  display:block; width:calc(100% - 28px); margin:6px 14px 12px;
+  padding:10px; text-align:center; color:#f44336;
+  border:1px solid #ffd0d0; border-radius:8px; background:#fff;
+  font-size:12px; cursor:pointer;
+}
+
+/* ══════════════════════════════════════
+   SCREEN 4 — ANALYSIS
+══════════════════════════════════════ */
+#screen-analysis { background:#f5f5f5; }
+
+.trend-wrap { background:#fff; padding:16px; border-bottom:1px solid #eee; }
+.trend-wrap svg { width:100%; height:90px; }
+
+.breakdown-wrap { background:#fff; margin-top:6px; padding:14px; }
+.breakdown-wrap h2 { font-size:14px; font-weight:800; margin-bottom:12px; }
+.bd-grid { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+.bd-card {
+  background:#fafafa; border:1px solid #eee; border-radius:10px; padding:10px;
+}
+.bd-name { font-size:8px; color:#bbb; letter-spacing:1px; margin-bottom:3px; text-transform:uppercase; }
+.bd-status { font-size:12px; font-weight:700; margin-bottom:5px; }
+.bd-status.strong { color:#4caf50; }
+.bd-status.needs { color:#ff9800; }
+.bd-status.weak { color:#f44336; }
+.bd-blocks { display:flex; gap:2px; flex-wrap:wrap; }
+.bb { width:13px; height:11px; border-radius:2px; }
+.bb.g { background:#4caf50; }
+.bb.o { background:#ff9800; }
+.bb.r { background:#f44336; }
+.bb.e { background:#e0e0e0; }
+
+.fatigue-wrap { background:#fff; margin-top:6px; padding:14px 14px 24px; }
+.fatigue-wrap h2 { font-size:14px; font-weight:800; margin-bottom:10px; }
+.fatigue-row {
+  display:flex; justify-content:space-between; align-items:center;
+  padding:9px 0; border-bottom:1px solid #f5f5f5; font-size:12px;
+}
+.fatigue-row .fval { font-weight:700; color:#f44336; }
+
+/* ── BOTTOM NAV ── */
+.bottom-nav {
+  display:flex; justify-content:space-around; align-items:center;
+  padding:10px 0 16px; border-top:1px solid #eee;
+  background:#fff; position:sticky; bottom:0; z-index:50;
+}
+.nav-item {
+  display:flex; flex-direction:column; align-items:center; gap:2px;
+  cursor:pointer; color:#bbb; font-size:9px; padding:4px 8px;
+  transition:color 0.2s;
+}
+.nav-item.active { color:#222; }
+.nav-item .ni { font-size:20px; line-height:1; }
+.nav-center {
+  background:#1a1a2e; color:#fff; border-radius:50%;
+  width:50px; height:50px; margin-top:-18px;
+  display:flex; flex-direction:column; align-items:center; justify-content:center;
+  box-shadow:0 4px 14px rgba(0,0,0,0.3); cursor:pointer; font-size:9px;
+}
+.nav-center .ni { font-size:20px; }
+
+/* dark nav for live screen */
+.bottom-nav.dark { background:#111; border-top:1px solid #222; }
+.bottom-nav.dark .nav-item { color:#555; }
+.bottom-nav.dark .nav-item.active { color:#fff; }
+</style>
+</head>
+<body>
+<div class="phone-wrap">
+
+  <!-- Status Bar -->
+  <div class="status-bar" id="statusBar" style="background:#000;color:#fff;">
+    <span id="clockDisplay">5:45</span>
+    <div class="notch"></div>
+    <div class="status-icons">
+      <span>▲▲▲</span>
+      <span>WiFi</span>
+      <span class="battery">100</span>
+    </div>
+  </div>
+
+  <!-- ════════════════════════════════════
+       SCREEN 1 — LIVE + MEDIAPIPE
+  ════════════════════════════════════ -->
+  <div id="screen-live" class="screen active">
+
+    <div class="live-topbar">
+      <span class="back-btn">✕</span>
+      <div class="live-ctrls">
+        <button class="ctrl-tag">GRID</button>
+        <button class="ctrl-tag">📷</button>
+        <button class="ctrl-tag">BI</button>
+        <button class="ctrl-tag live-dot">LIVE</button>
+      </div>
+    </div>
+
+    <div class="camera-container" id="cameraContainer">
+
+      <!-- Loading state -->
+      <div id="loading-overlay">
+        <div class="spinner"></div>
+        <div class="title">SwingAI</div>
+        <p id="loading-msg">Starting camera…</p>
+      </div>
+
+      <!-- Permission denied -->
+      <div id="perm-denied">
+        <h2>📷 Camera Access Denied</h2>
+        <p>SwingAI needs camera permission to track your golf swing.<br><br>
+        Please allow camera access in your browser settings, then tap Retry.</p>
+        <button class="retry-btn" onclick="initCamera()">Retry</button>
+      </div>
+
+      <!-- Camera video (hidden, fed to MediaPipe) -->
+      <video id="input-video" playsinline muted></video>
+
+      <!-- Pose canvas overlay -->
+      <canvas id="pose-canvas"></canvas>
+
+      <!-- Live metrics overlay -->
+      <div class="live-metrics" id="liveMetrics" style="display:none;">
+        <div class="lm-item">
+          <div class="lm-name">HEAD STABILITY</div>
+          <div class="lm-bar-bg"><div class="lm-bar-fill" id="lm-head" style="width:0%;background:#00e676;"></div></div>
+        </div>
+        <div class="lm-item">
+          <div class="lm-name">SPINE ANGLE</div>
+          <div class="lm-bar-bg"><div class="lm-bar-fill" id="lm-spine" style="width:0%;background:#00e676;"></div></div>
+        </div>
+        <div class="lm-item">
+          <div class="lm-name">HIP ROTATION</div>
+          <div class="lm-bar-bg"><div class="lm-bar-fill" id="lm-hip" style="width:0%;background:#4caf50;"></div></div>
+        </div>
+        <div class="lm-item">
+          <div class="lm-name">SHOULDER TURN</div>
+          <div class="lm-bar-bg"><div class="lm-bar-fill" id="lm-shoulder" style="width:0%;background:#4caf50;"></div></div>
+        </div>
+      </div>
+
+      <div class="phase-label" id="phaseLabel"># 1 Address…</div>
+      <div class="fps-label" id="fpsLabel">-- fps</div>
+    </div>
+
+    <button class="stop-btn" id="stopBtn" onclick="stopAndAnalyze()">STOP</button>
+  </div>
+
+  <!-- ════════════════════════════════════
+       SCREEN 2 — RESULT
+  ════════════════════════════════════ -->
+  <div id="screen-result" class="screen">
+    <div class="result-topbar">
+      <span class="back" onclick="goTo('screen-live')">‹ RANGE</span>
+      <span class="title">SWING ANALYSIS</span>
+      <div class="tag-row">
+        <span class="tag">GRID</span>
+        <span class="tag">📷</span>
+        <span class="tag done">DONE</span>
+      </div>
+    </div>
+
+    <!-- Pose snapshot -->
+    <div class="pose-preview" id="posePreview">
+      <canvas id="capture-canvas" style="max-height:190px;border-radius:6px;display:none;"></canvas>
+      <div class="no-capture" id="noCaptureMsg">Swing snapshot will appear here</div>
+    </div>
+
+    <!-- Score -->
+    <div class="score-area">
+      <div class="score-label-sm">SWING ANALYSIS</div>
+      <div class="score-row">
+        <span class="score-big" id="resultScore">–</span>
+        <span class="score-denom"> / 10</span>
+        <div class="score-bar-wrap">
+          <div class="score-bar-lbl">SWING SCORE</div>
+          <div class="score-bar-bg">
+            <div class="score-bar-fill" id="scoreBarFill" style="width:0%"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Metrics -->
+    <div class="metrics-grid" id="metricsGrid">
+      <!-- populated by JS -->
+    </div>
+
+    <div class="result-actions">
+      <button class="btn-share" onclick="shareResult()">SHARE</button>
+      <button class="btn-again" onclick="goTo('screen-live')">AGAIN</button>
+    </div>
+  </div>
+
+  <!-- ════════════════════════════════════
+       SCREEN 3 — RECORD
+  ════════════════════════════════════ -->
+  <div id="screen-record" class="screen">
+    <div class="light-topbar"><h1>Swing Record</h1></div>
+    <div class="record-count" id="recordCount">0 swings</div>
+    <div id="swingList">
+      <!-- populated by JS -->
+      <div style="padding:40px 20px;text-align:center;color:#bbb;font-size:13px;">
+        No swings recorded yet.<br>Tap Swing Now to start!
+      </div>
+    </div>
+    <div style="height:72px;"></div>
+    <nav class="bottom-nav">
+      <div class="nav-item" onclick="goTo('screen-home')"><span class="ni">⌂</span><span>Home</span></div>
+      <div class="nav-item active" onclick="goTo('screen-record')"><span class="ni">📈</span><span>Record</span></div>
+      <div class="nav-center" onclick="goTo('screen-live')"><span class="ni">🏌</span><span>Swing</span></div>
+      <div class="nav-item" onclick="goTo('screen-analysis')"><span class="ni">📊</span><span>Analysis</span></div>
+      <div class="nav-item"><span class="ni">⚙</span><span>Setting</span></div>
+    </nav>
+  </div>
+
+  <!-- ════════════════════════════════════
+       SCREEN 4 — ANALYSIS
+  ════════════════════════════════════ -->
+  <div id="screen-analysis" class="screen">
+    <div class="light-topbar"><h1>Swing Analysis</h1></div>
+
+    <div class="trend-wrap">
+      <svg id="trendSvg" viewBox="0 0 340 90" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <text x="0" y="14" font-size="8" fill="#aaa">10</text>
+        <text x="0" y="50" font-size="8" fill="#aaa">5</text>
+        <text x="0" y="86" font-size="8" fill="#aaa">0</text>
+        <line x1="20" y1="12" x2="338" y2="12" stroke="#eee" stroke-width="0.5"/>
+        <line x1="20" y1="48" x2="338" y2="48" stroke="#eee" stroke-width="0.5"/>
+        <line x1="20" y1="84" x2="338" y2="84" stroke="#eee" stroke-width="0.5"/>
+        <text x="20" y="97" font-size="8" fill="#aaa">#1</text>
+        <text x="170" y="97" font-size="8" fill="#aaa">#5</text>
+        <text x="300" y="97" font-size="8" fill="#aaa">#10</text>
+        <polyline id="trendLine"
+          points="24,84"
+          stroke="#4caf50" stroke-width="2" fill="none"/>
+      </svg>
+    </div>
+
+    <div class="breakdown-wrap">
+      <h2>Metric Breakdown</h2>
+      <div class="bd-grid" id="bdGrid">
+        <!-- populated by JS -->
+        <div style="color:#bbb;font-size:12px;padding:12px;grid-column:1/-1;">No data yet. Record a swing first.</div>
+      </div>
+    </div>
+
+    <div class="fatigue-wrap">
+      <h2>Fatigue Analysis</h2>
+      <div class="fatigue-row"><span>Score Trend</span><span class="fval" id="fatigueTrend">–</span></div>
+      <div class="fatigue-row"><span>Early Average</span><span id="earlyAvg" style="font-weight:700;">–</span></div>
+      <div class="fatigue-row"><span>Late Average</span><span id="lateAvg" style="font-weight:700;">–</span></div>
+    </div>
+
+    <div style="height:72px;"></div>
+    <nav class="bottom-nav">
+      <div class="nav-item"><span class="ni">⌂</span><span>Home</span></div>
+      <div class="nav-item" onclick="goTo('screen-record')"><span class="ni">📈</span><span>Record</span></div>
+      <div class="nav-center" onclick="goTo('screen-live')"><span class="ni">🏌</span><span>Swing</span></div>
+      <div class="nav-item active" onclick="goTo('screen-analysis')"><span class="ni">📊</span><span>Analysis</span></div>
+      <div class="nav-item"><span class="ni">⚙</span><span>Setting</span></div>
+    </nav>
+  </div>
+
+</div><!-- end phone-wrap -->
+
+<script>
+// ══════════════════════════════════════════════
+// STATE
+// ══════════════════════════════════════════════
+const swingHistory = [];
+let currentMetrics = {};
+let frameCount = 0, lastFpsTime = Date.now(), fps = 0;
+let poseInstance = null, cameraInstance = null;
+let lastLandmarks = null;
+let headPositions = [];   // track head movement
+let swingPhase = 0;       // 0=address,1=backswing,2=downswing,3=impact,4=follow
+const phaseNames = ['# 1 Address…','# 2 Backswing…','# 3 Downswing…','# 4 Impact!','# 5 Follow-through'];
+let phaseTimer = null;
+let isRecording = false;
+let captureSnapshot = null; // base64 snapshot at impact
+
+// ══════════════════════════════════════════════
+// NAVIGATION
+// ══════════════════════════════════════════════
+function goTo(id) {
+  document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
+  document.getElementById(id).classList.add('active');
+  const sb = document.getElementById('statusBar');
+  const isLive = id === 'screen-live';
+  sb.style.background = isLive ? '#000' : '#fff';
+  sb.style.color = isLive ? '#fff' : '#000';
+
+  if (id === 'screen-record') renderRecord();
+  if (id === 'screen-analysis') renderAnalysis();
+}
+
+// ══════════════════════════════════════════════
+// CLOCK
+// ══════════════════════════════════════════════
+function updateClock() {
+  const n = new Date();
+  document.getElementById('clockDisplay').textContent =
+    n.getHours().toString().padStart(2,'0') + ':' + n.getMinutes().toString().padStart(2,'0');
+}
+updateClock(); setInterval(updateClock, 30000);
+
+// ══════════════════════════════════════════════
+// MEDIAPIPE INIT
+// ══════════════════════════════════════════════
+function initCamera() {
+  document.getElementById('perm-denied').classList.remove('show');
+  document.getElementById('loading-overlay').style.display = 'flex';
+  document.getElementById('loading-msg').textContent = 'Loading pose model…';
+
+  const videoEl = document.getElementById('input-video');
+  const canvas = document.getElementById('pose-canvas');
+  const ctx = canvas.getContext('2d');
+
+  // Size canvas to fill container
+  function sizeCanvas() {
+    const c = document.getElementById('cameraContainer');
+    canvas.width = c.offsetWidth;
+    canvas.height = c.offsetHeight;
+  }
+  sizeCanvas();
+  window.addEventListener('resize', sizeCanvas);
+
+  // Init Pose
+  poseInstance = new Pose({
+    locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`
+  });
+  poseInstance.setOptions({
+    modelComplexity: 1,
+    smoothLandmarks: true,
+    enableSegmentation: false,
+    minDetectionConfidence: 0.5,
+    minTrackingConfidence: 0.5
+  });
+
+  poseInstance.onResults(onPoseResults);
+
+  // Camera wrapper
+  cameraInstance = new Camera(videoEl, {
+    onFrame: async () => {
+      await poseInstance.send({ image: videoEl });
+    },
+    width: 640, height: 480,
+    facingMode: 'environment'  // rear camera
+  });
+
+  document.getElementById('loading-msg').textContent = 'Requesting camera…';
+
+  cameraInstance.start()
+    .then(() => {
+      document.getElementById('loading-msg').textContent = 'Detecting pose…';
+      isRecording = true;
+      startPhaseSimulation();
+    })
+    .catch(err => {
+      console.error('Camera error:', err);
+      document.getElementById('loading-overlay').style.display = 'none';
+      document.getElementById('perm-denied').classList.add('show');
+    });
+}
+
+// ══════════════════════════════════════════════
+// POSE RESULTS CALLBACK
+// ══════════════════════════════════════════════
+function onPoseResults(results) {
+  const canvas = document.getElementById('pose-canvas');
+  const ctx = canvas.getContext('2d');
+
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  // Hide loader on first result
+  const overlay = document.getElementById('loading-overlay');
+  if (overlay.style.display !== 'none') {
+    overlay.style.display = 'none';
+    document.getElementById('liveMetrics').style.display = 'flex';
+  }
+
+  if (!results.poseLandmarks) return;
+  lastLandmarks = results.poseLandmarks;
+
+  // ── Draw skeleton ──
+  drawSkeleton(ctx, results.poseLandmarks, canvas.width, canvas.height);
+
+  // ── Compute metrics ──
+  computeMetrics(results.poseLandmarks);
+
+  // ── FPS ──
+  frameCount++;
+  const now = Date.now();
+  if (now - lastFpsTime >= 1000) {
+    fps = frameCount;
+    frameCount = 0;
+    lastFpsTime = now;
+    document.getElementById('fpsLabel').textContent = fps + ' fps';
+  }
+}
+
+// ══════════════════════════════════════════════
+// DRAW SKELETON
+// ══════════════════════════════════════════════
+const POSE_CONNECTIONS = [
+  [11,12],[11,13],[13,15],[12,14],[14,16], // arms
+  [11,23],[12,24],[23,24],                  // torso
+  [23,25],[25,27],[24,26],[26,28],          // legs
+  [27,29],[29,31],[28,30],[30,32],          // feet
+  [0,1],[1,2],[2,3],[3,7],                  // face left
+  [0,4],[4,5],[5,6],[6,8],                  // face right
+];
+
+function drawSkeleton(ctx, landmarks, w, h) {
+  // Draw connections
+  ctx.strokeStyle = '#00e676';
+  ctx.lineWidth = 2.5;
+  ctx.shadowColor = '#00e676';
+  ctx.shadowBlur = 6;
+
+  for (const [a, b] of POSE_CONNECTIONS) {
+    const lA = landmarks[a], lB = landmarks[b];
+    if (!lA || !lB) continue;
+    if (lA.visibility < 0.4 || lB.visibility < 0.4) continue;
+    ctx.beginPath();
+    ctx.moveTo(lA.x * w, lA.y * h);
+    ctx.lineTo(lB.x * w, lB.y * h);
+    ctx.stroke();
+  }
+
+  // Draw joints
+  ctx.shadowBlur = 0;
+  for (let i = 0; i < landmarks.length; i++) {
+    const lm = landmarks[i];
+    if (!lm || lm.visibility < 0.4) continue;
+    // skip face landmarks except nose
+    if (i > 10 && i < 17) continue;
+    ctx.beginPath();
+    ctx.arc(lm.x * w, lm.y * h, i === 0 ? 6 : 4, 0, Math.PI * 2);
+    ctx.fillStyle = '#00e676';
+    ctx.fill();
+    ctx.strokeStyle = '#003300';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+  }
+}
+
+// ══════════════════════════════════════════════
+// COMPUTE REAL METRICS FROM LANDMARKS
+// ══════════════════════════════════════════════
+function angle3(A, B, C) {
+  // angle at B
+  const v1 = { x: A.x - B.x, y: A.y - B.y };
+  const v2 = { x: C.x - B.x, y: C.y - B.y };
+  const dot = v1.x*v2.x + v1.y*v2.y;
+  const mag = Math.sqrt((v1.x**2+v1.y**2)) * Math.sqrt((v2.x**2+v2.y**2));
+  if (mag === 0) return 0;
+  return Math.round(Math.acos(Math.max(-1, Math.min(1, dot/mag))) * 180 / Math.PI);
+}
+
+function dist(A, B) {
+  return Math.sqrt((A.x-B.x)**2 + (A.y-B.y)**2);
+}
+
+function computeMetrics(lm) {
+  if (!lm) return;
+
+  // HEAD STABILITY: track nose position variance
+  const nose = lm[0];
+  headPositions.push({ x: nose.x, y: nose.y });
+  if (headPositions.length > 30) headPositions.shift();
+  let xVar = 0, yVar = 0;
+  if (headPositions.length > 5) {
+    const avgX = headPositions.reduce((s,p) => s+p.x, 0) / headPositions.length;
+    const avgY = headPositions.reduce((s,p) => s+p.y, 0) / headPositions.length;
+    xVar = Math.sqrt(headPositions.reduce((s,p) => s+(p.x-avgX)**2, 0)/headPositions.length);
+    yVar = Math.sqrt(headPositions.reduce((s,p) => s+(p.y-avgY)**2, 0)/headPositions.length);
+  }
+  const headStability = Math.max(0, Math.min(100, 100 - (xVar + yVar) * 2000));
+
+  // SPINE ANGLE: line from mid-hip to mid-shoulder vs vertical
+  const midHip = { x:(lm[23].x+lm[24].x)/2, y:(lm[23].y+lm[24].y)/2 };
+  const midShoulder = { x:(lm[11].x+lm[12].x)/2, y:(lm[11].y+lm[12].y)/2 };
+  const spineVec = { x: midShoulder.x-midHip.x, y: midShoulder.y-midHip.y };
+  const spineAngle = Math.round(Math.atan2(Math.abs(spineVec.x), -spineVec.y) * 180 / Math.PI);
+
+  // HIP ROTATION: horizontal distance between hips normalized
+  const hipWidth = Math.abs(lm[23].x - lm[24].x);
+  const hipRotation = Math.min(100, Math.round(hipWidth * 400));
+
+  // SHOULDER TURN: horizontal distance between shoulders
+  const shoulderWidth = Math.abs(lm[11].x - lm[12].x);
+  const shoulderTurn = Math.min(100, Math.round(shoulderWidth * 350));
+
+  // KNEE FLEX: angle at left knee
+  const kneeAngle = angle3(lm[23], lm[25], lm[27]);
+
+  // WEIGHT TRANSFER: lateral hip shift (x movement from center)
+  const hipShift = Math.abs(midHip.x - 0.5);
+  const weightTransfer = Math.min(100, Math.round(hipShift * 500));
+
+  currentMetrics = {
+    headStability: Math.round(headStability),
+    spineAngle,
+    hipRotation,
+    shoulderTurn,
+    kneeAngle,
+    weightTransfer
+  };
+
+  // Update live bars
+  const setBar = (id, val) => {
+    const el = document.getElementById(id);
+    if (el) el.style.width = val + '%';
+  };
+  setBar('lm-head', headStability);
+  setBar('lm-spine', Math.max(0, 100 - spineAngle * 2));
+  setBar('lm-hip', hipRotation);
+  setBar('lm-shoulder', shoulderTurn);
+}
+
+// ══════════════════════════════════════════════
+// PHASE SIMULATION (auto-advance phases)
+// ══════════════════════════════════════════════
+function startPhaseSimulation() {
+  swingPhase = 0;
+  updatePhaseLabel();
+}
+
+function updatePhaseLabel() {
+  document.getElementById('phaseLabel').textContent = phaseNames[swingPhase] || '';
+}
+
+// ══════════════════════════════════════════════
+// STOP & ANALYZE
+// ══════════════════════════════════════════════
+function stopAndAnalyze() {
+  isRecording = false;
+
+  // Capture snapshot from canvas
+  const poseCanvas = document.getElementById('pose-canvas');
+  const captureCanvas = document.getElementById('capture-canvas');
+  const captureCtx = captureCanvas.getContext('2d');
+  captureCanvas.width = poseCanvas.width;
+  captureCanvas.height = poseCanvas.height;
+
+  // Draw video frame + skeleton onto capture canvas
+  const videoEl = document.getElementById('input-video');
+  captureCtx.save();
+  captureCtx.scale(-1, 1);
+  captureCtx.drawImage(videoEl, -captureCanvas.width, 0, captureCanvas.width, captureCanvas.height);
+  captureCtx.restore();
+  if (lastLandmarks) {
+    drawSkeleton(captureCtx, lastLandmarks, captureCanvas.width, captureCanvas.height);
+  }
+  captureSnapshot = captureCanvas.toDataURL('image/jpeg', 0.8);
+
+  // Build result metrics
+  const m = currentMetrics;
+  const headScore  = m.headStability > 70 ? 'Excellent' : m.headStability > 40 ? 'Good' : 'Needs Work';
+  const spineScore = m.spineAngle < 15 ? 'Excellent' : m.spineAngle < 30 ? 'Good' : 'Tilted';
+  const hipScore   = m.hipRotation > 60 ? 'Good' : m.hipRotation > 30 ? 'Fair' : 'Low';
+  const shoulderScore = m.shoulderTurn > 60 ? 'Good' : m.shoulderTurn > 30 ? 'Fair' : 'Low';
+  const kneeScore  = (m.kneeAngle > 130 && m.kneeAngle < 170) ? 'Good' : 'Check';
+  const wtScore    = m.weightTransfer > 50 ? 'Good' : 'No Transfer';
+
+  // Compute swing score out of 10
+  let score = 0;
+  if (m.headStability > 70) score += 2; else if (m.headStability > 40) score += 1.2;
+  if (m.spineAngle < 15) score += 1.5; else if (m.spineAngle < 30) score += 0.8;
+  if (m.hipRotation > 60) score += 1.5; else if (m.hipRotation > 30) score += 0.8;
+  if (m.shoulderTurn > 60) score += 1.5; else if (m.shoulderTurn > 30) score += 0.8;
+  if (m.kneeAngle > 130 && m.kneeAngle < 170) score += 1.5; else score += 0.5;
+  if (m.weightTransfer > 50) score += 2; else if (m.weightTransfer > 25) score += 0.8;
+  score = Math.min(10, Math.max(1, parseFloat(score.toFixed(1))));
+
+  // Save to history
+  const entry = {
+    date: new Date(),
+    score,
+    club: '8i · Short Iron',
+    metrics: { headScore, spineScore, hipScore, shoulderScore, kneeScore, wtScore, ...m },
+    snapshot: captureSnapshot
+  };
+  swingHistory.unshift(entry);
+
+  // Render result screen
+  renderResult(entry);
+  goTo('screen-result');
+}
+
+// ══════════════════════════════════════════════
+// RENDER RESULT SCREEN
+// ══════════════════════════════════════════════
+function renderResult(entry) {
+  // Score
+  document.getElementById('resultScore').textContent = entry.score.toFixed(1);
+  document.getElementById('scoreBarFill').style.width = (entry.score / 10 * 100) + '%';
+
+  // Snapshot
+  if (entry.snapshot) {
+    const cc = document.getElementById('capture-canvas');
+    cc.style.display = 'block';
+    document.getElementById('noCaptureMsg').style.display = 'none';
+    // already drawn
+  }
+
+  // Metrics grid
+  const m = entry.metrics;
+  const cells = [
+    { name:'HEAD STABILITY', rating:m.headScore, sub:`Var: ${(100-m.headStability).toFixed(1)}`, bar:m.headStability, cls: ratingClass(m.headScore) },
+    { name:'SPINE ANGLE',    rating:m.spineScore, sub:`${m.spineAngle}°`, bar:Math.max(0,100-m.spineAngle*3), cls: ratingClass(m.spineScore) },
+    { name:'HIP ROTATION',   rating:m.hipScore, sub:`Score: ${m.hipRotation}%`, bar:m.hipRotation, cls: ratingClass(m.hipScore) },
+    { name:'SHOULDER TURN',  rating:m.shoulderScore, sub:`Score: ${m.shoulderTurn}%`, bar:m.shoulderTurn, cls: ratingClass(m.shoulderScore) },
+    { name:'KNEE FLEX',      rating:m.kneeScore, sub:`Angle: ${m.kneeAngle}°`, bar:m.kneeAngle>130&&m.kneeAngle<170?80:30, cls: ratingClass(m.kneeScore) },
+    { name:'WEIGHT TRANSFER',rating:m.wtScore, sub:`${m.weightTransfer}%`, bar:m.weightTransfer, cls: ratingClass(m.wtScore) },
+  ];
+
+  const grid = document.getElementById('metricsGrid');
+  grid.innerHTML = cells.map(c => `
+    <div class="metric-cell">
+      <div class="metric-name">${c.name}</div>
+      <div class="metric-rating ${c.cls}">${c.rating}</div>
+      <div class="metric-sub">${c.sub}</div>
+      <div class="metric-bar ${c.bar > 50 ? 'g' : 'r'}" style="width:${c.bar}%"></div>
+    </div>
+  `).join('');
+}
+
+function ratingClass(r) {
+  if (!r) return '';
+  const s = r.toLowerCase();
+  if (s.includes('excellent')) return 'excellent';
+  if (s.includes('good')) return 'good';
+  return 'warning';
+}
+
+// ══════════════════════════════════════════════
+// RENDER RECORD SCREEN
+// ══════════════════════════════════════════════
+function renderRecord() {
+  document.getElementById('recordCount').textContent = swingHistory.length + ' swings';
+
+  if (swingHistory.length === 0) {
+    document.getElementById('swingList').innerHTML = `
+      <div style="padding:40px 20px;text-align:center;color:#bbb;font-size:13px;">
+        No swings recorded yet.<br>Tap Swing Now to start!
+      </div>`;
+    return;
+  }
+
+  document.getElementById('swingList').innerHTML = swingHistory.map((e, i) => {
+    const d = e.date;
+    const dateStr = d.getDate() + ' ' + ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][d.getMonth()] + ' ' + d.getFullYear();
+    const timeStr = d.getHours().toString().padStart(2,'0') + ':' + d.getMinutes().toString().padStart(2,'0') + ' ' + (d.getHours()>=12?'PM':'AM');
+    const ratingLbl = e.score >= 7 ? 'GREAT' : e.score >= 5 ? 'GOOD' : 'FAIR';
+    const badgeClass = e.score >= 7 ? 'good' : 'fair';
+
+    return `
+    <div class="swing-card">
+      <div class="swing-card-header">
+        <div class="score-badge ${badgeClass}">
+          <span class="snum">${e.score.toFixed(1)}</span>
+          <span class="slbl">${ratingLbl}</span>
+        </div>
+        <div class="swing-meta">
+          <div class="swing-date">${dateStr}</div>
+          <div class="swing-time">${timeStr}</div>
+          <div class="swing-club">${e.club}</div>
+        </div>
+        <span class="expand-btn">›</span>
+      </div>
+      <div class="metrics-mini">
+        <div class="mm-item"><div class="mm-name">HEAD STABILITY</div><div class="mm-val g">${e.metrics.headScore}</div><div class="mm-bar g" style="width:${e.metrics.headStability||70}%"></div></div>
+        <div class="mm-item"><div class="mm-name">SPINE ANGLE</div><div class="mm-val g">${e.metrics.spineScore}</div><div class="mm-bar g" style="width:${Math.max(0,100-(e.metrics.spineAngle||10)*3)}%"></div></div>
+        <div class="mm-item"><div class="mm-name">HIP ROTATION</div><div class="mm-val ${e.metrics.hipRotation>50?'g':'r'}">${e.metrics.hipScore}</div><div class="mm-bar ${e.metrics.hipRotation>50?'g':'r'}" style="width:${e.metrics.hipRotation||50}%"></div></div>
+        <div class="mm-item"><div class="mm-name">WEIGHT TRANSFER</div><div class="mm-val r">${e.metrics.wtScore}</div><div class="mm-bar r" style="width:${e.metrics.weightTransfer||5}%"></div></div>
+      </div>
+      <button class="delete-btn" onclick="deleteSwing(${i})">Delete Swing</button>
+    </div>`;
+  }).join('');
+}
+
+function deleteSwing(i) {
+  swingHistory.splice(i, 1);
+  renderRecord();
+}
+
+// ══════════════════════════════════════════════
+// RENDER ANALYSIS SCREEN
+// ══════════════════════════════════════════════
+function renderAnalysis() {
+  if (swingHistory.length === 0) {
+    document.getElementById('bdGrid').innerHTML = `<div style="color:#bbb;font-size:12px;padding:12px;grid-column:1/-1;">No data yet. Record a swing first.</div>`;
+    return;
+  }
+
+  // Trend chart
+  const scores = [...swingHistory].reverse().map(e => e.score);
+  const ptSpacing = Math.min(40, 300 / Math.max(scores.length - 1, 1));
+  const points = scores.map((s, i) => {
+    const x = 24 + i * ptSpacing;
+    const y = 84 - (s / 10) * 72;
+    return `${x},${y}`;
+  }).join(' ');
+  document.getElementById('trendLine').setAttribute('points', points);
+
+  // Metric averages
+  const avgMetric = key => {
+    const vals = swingHistory.map(e => e.metrics[key] || 0).filter(v => v > 0);
+    return vals.length ? vals.reduce((a,b)=>a+b,0)/vals.length : 0;
+  };
+
+  const avgHead = avgMetric('headStability');
+  const avgSpine = Math.max(0, 100 - avgMetric('spineAngle')*3);
+  const avgHip = avgMetric('hipRotation');
+  const avgShoulder = avgMetric('shoulderTurn');
+  const avgKnee = 70;
+  const avgWT = avgMetric('weightTransfer');
+
+  function blocks(pct) {
+    const filled = Math.round(pct / 10);
+    const color = pct >= 70 ? 'g' : pct >= 40 ? 'o' : 'r';
+    return Array.from({length:10}, (_,i) =>
+      `<div class="bb ${i < filled ? color : 'e'}"></div>`
+    ).join('');
+  }
+  function statusLabel(pct) {
+    if (pct >= 70) return '<span class="bd-status strong">Strong · ' + Math.round(pct) + '%</span>';
+    if (pct >= 40) return '<span class="bd-status needs">Needs Work · ' + Math.round(pct) + '%</span>';
+    return '<span class="bd-status weak">Weak · ' + Math.round(pct) + '%</span>';
+  }
+
+  const metrics = [
+    { name:'HEAD STABILITY', pct:avgHead },
+    { name:'SPINE ANGLE', pct:avgSpine },
+    { name:'HIP ROTATION', pct:avgHip },
+    { name:'SHOULDER TURN', pct:avgShoulder },
+    { name:'KNEE FLEX', pct:avgKnee },
+    { name:'WEIGHT TRANSFER', pct:avgWT },
+  ];
+
+  document.getElementById('bdGrid').innerHTML = metrics.map(m => `
+    <div class="bd-card">
+      <div class="bd-name">${m.name}</div>
+      ${statusLabel(m.pct)}
+      <div class="bd-blocks">${blocks(m.pct)}</div>
+    </div>
+  `).join('');
+
+  // Fatigue
+  if (swingHistory.length >= 4) {
+    const allScores = [...swingHistory].reverse().map(e => e.score);
+    const half = Math.floor(allScores.length / 2);
+    const earlyAvg = (allScores.slice(0,half).reduce((a,b)=>a+b,0)/half).toFixed(1);
+    const lateAvg = (allScores.slice(half).reduce((a,b)=>a+b,0)/(allScores.length-half)).toFixed(1);
+    const trend = parseFloat(lateAvg) < parseFloat(earlyAvg) ? 'Declining' : 'Improving';
+    document.getElementById('fatigueTrend').textContent = trend;
+    document.getElementById('fatigueTrend').style.color = trend === 'Declining' ? '#f44336' : '#4caf50';
+    document.getElementById('earlyAvg').textContent = earlyAvg;
+    document.getElementById('lateAvg').textContent = lateAvg;
+  } else {
+    document.getElementById('fatigueTrend').textContent = 'Need 4+ swings';
+    document.getElementById('earlyAvg').textContent = '–';
+    document.getElementById('lateAvg').textContent = '–';
+  }
+}
+
+// ══════════════════════════════════════════════
+// SHARE
+// ══════════════════════════════════════════════
+function shareResult() {
+  if (navigator.share) {
+    navigator.share({ title:'My SwingAI Result', text:`I scored ${document.getElementById('resultScore').textContent}/10 on SwingAI!` });
+  } else {
+    alert('Score: ' + document.getElementById('resultScore').textContent + '/10\nShare not supported on this browser.');
+  }
+}
+
+// ══════════════════════════════════════════════
+// AUTO-START when live screen is visible
+// ══════════════════════════════════════════════
+window.addEventListener('load', () => {
+  // Small delay to let MediaPipe scripts load
+  setTimeout(initCamera, 800);
+});
+</script>
+</body>
+</html>
